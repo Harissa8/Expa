@@ -14,6 +14,7 @@ report/*.png
 report/*.jpg
 report/*.pdf
 report/*.trx
+figures/
 
 # Python cache
 __pycache__/
