@@ -6,10 +6,14 @@ data3/
 # Results and generated outputs
 results/
 
-# Generated report figures
+# Report paper and figures
+report.trx
+report.pdf
 report/figures/
 report/*.png
 report/*.jpg
+report/*.pdf
+report/*.trx
 
 # Python cache
 __pycache__/
