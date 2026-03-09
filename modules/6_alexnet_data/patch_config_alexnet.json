@@ -1,0 +1,15 @@
+{
+    "patch_size":    28,
+    "target_class":  954,
+    "target_name":   "banana",
+    "pgd_iters":     200,
+    "pgd_lr":        0.05,
+    "pgd_batch":     16,
+    "position":      "center",
+    "model": {
+        "arch":      "alexnet",
+        "mean":      [0.485, 0.456, 0.406],
+        "std":       [0.229, 0.224, 0.225],
+        "input_size": 224
+    }
+}

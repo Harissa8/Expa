@@ -1,0 +1,16 @@
+{
+    "patch_size":    8,
+    "target_class":  9,
+    "target_name":   "truck",
+    "pgd_iters":     100,
+    "pgd_lr":        0.05,
+    "pgd_batch":     16,
+    "position":      "center",
+    "model": {
+        "hub_repo":  "chenyaofo/pytorch-cifar-models",
+        "hub_name":  "cifar10_resnet20",
+        "mean":      [0.4914, 0.4822, 0.4465],
+        "std":       [0.2470, 0.2435, 0.2616],
+        "input_size": 32
+    }
+}

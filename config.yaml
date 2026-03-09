@@ -1,0 +1,56 @@
+# Global configuration for the adversarial patch testing pipeline.
+# Each module reads from this file so tuning thresholds is a one-file change.
+
+# ── Paths (relative to adversarial_testing/) ──────────────────────────────────
+paths:
+  clean_dir:   "data/cifar10/clean"
+  patched_dir: "data/cifar10/patched"
+  fooled_dir:  "data/fooled_images"
+  results_dir: "results"
+
+# ── CIFAR-10 Model ─────────────────────────────────────────────────────────────
+model:
+  hub_repo:   "chenyaofo/pytorch-cifar-models"
+  hub_name:   "cifar10_resnet20"
+  num_classes: 10
+  input_size:  32
+  mean: [0.4914, 0.4822, 0.4465]
+  std:  [0.2470, 0.2435, 0.2616]
+  device: "cpu"
+
+# ── Data Acquisition ────────────────────────────────────────────────────────────
+data:
+  n_images: 500        # images to pull from CIFAR-10 test set
+  split: "test"
+
+# ── Patch Generation (PGD attack) ──────────────────────────────────────────────
+patch:
+  size: 8              # side length in pixels (8x8 on 32x32 = 25% of image)
+  target_class: 9      # 9 = "truck"
+  pgd_iters: 100
+  pgd_lr: 0.05
+  pgd_batch: 16        # images used to generate the universal patch
+
+# ── Attack Validation ──────────────────────────────────────────────────────────
+attack_validation:
+  # An attack is successful if patched image is predicted as target_class
+  require_original_correct: true   # also require original was NOT target_class
+
+# ── Defense 1 — EXPA (EigenCAM) ────────────────────────────────────────────────
+defense_expa:
+  early_layer: "layer1"    # ResNet-20 first residual group → 16×32×32
+  late_layer:  "layer3"    # ResNet-20 third residual group → 64×8×8
+  # Anomaly thresholds (tuned for ResNet-20 on 32×32 CIFAR images)
+  entropy_threshold:    5.0   # below = concentrated attention = suspicious
+  peak_mean_threshold:  3.5   # above = sharp localized peak   = suspicious
+  topk_ratio_threshold: 0.25  # above = energy in few pixels   = suspicious
+  topk_percent:         0.05  # top-k = top 5% of spatial positions
+  cross_layer_threshold: 0.5  # below = inconsistent layers    = suspicious
+  mask_confidence_drop:  0.15 # min drop to confirm adversarial hotspot
+  detection_mode: "vote"      # "vote" = 2+ flags, "any" = 1 flag
+
+# ── Defense 2 — Median Filter ──────────────────────────────────────────────────
+defense_median:
+  kernel_size: 3       # 3×3 for 32×32 images (5×5 would over-smooth)
+  kl_threshold: 0.5    # KL divergence above this = attack detected
+  require_class_change: false  # if true, ONLY flag when class changes

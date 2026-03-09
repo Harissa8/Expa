@@ -1,0 +1,37 @@
+# Datasets — not pushed to repo
+data/
+data2/
+data3/
+
+# Results and generated outputs
+results/
+
+# Generated report figures
+report/figures/
+report/*.png
+report/*.jpg
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Image files anywhere in the repo
+*.png
+*.jpg
+*.jpeg
+*.JPEG
+*.tgz
+*.tar.gz
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/

@@ -172,4 +172,4 @@ Datasets are **not included** in this repository (gitignored).
 
 This code accompanies the report:
 **"EXPA: Explainability-Based Detection and Recovery of Adversarial Patches"**
-ENSTA Paris — Systems Application, 2025
+ENSTA  — Systems Application, 2025

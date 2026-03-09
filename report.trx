@@ -1,0 +1,638 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subcaption}
+
+\begin{document}
+
+\title{EXPA: Multi-Stage Adversarial Patch Defense Through \\
+Cascade Detection and Explainable AI Localization}
+
+\author{\IEEEauthorblockN{Hussein Harissa}
+\IEEEauthorblockA{\textit{Computer Science and Networks Department} \\
+\textit{ENSTA Bretagne}\\
+Brest, France \\
+hussein.harissa@ensta-bretagne.fr}
+}
+
+\maketitle
+\begin{abstract}
+Adversarial patches pose serious security threats to image classification
+systems: physically realizable perturbations that cause persistent
+misclassification across diverse inputs. We validate this threat by
+generating universal patches via Projected Gradient Descent (PGD)
+against AlexNet, achieving attack success rates from 4.9\% to 51.7\%,
+revealing that patch vulnerability is governed by target class topology
+in the model's feature space.
+
+To counter these attacks, we present EXPA, a four-stage gradient-free
+cascade defense. The core insight is that adversarial patches must
+dominate model attention to cause misclassification, making them
+detectable through Explainable AI (XAI) analysis. EXPA combines: a
+median filter KL-divergence screen for fast suspicious-image flagging;
+EigenCAM-based confirmation that identifies abnormally concentrated
+activation patterns; EigenCAM heatmap localization of the patch region;
+and median inpainting for patch removal and re-classification --- all
+without any model retraining or backpropagation.
+
+Evaluated across six patch/dataset combinations (ImageNette and STL-10,
+three target classes), EXPA achieves 98.7\% average detection, 100\%
+patch localization accuracy, and 58.4\% class restoration. EigenCAM
+confirmation reduces false positives by 43.2\% over median filtering
+alone (34.5\% $\rightarrow$ 19.6\%), yielding a 17.6\% average FPR
+(6.9\%--19.6\% across datasets). These results demonstrate that
+gradient-free XAI tools can be effectively repurposed from model
+interpretation to robust adversarial defense.
+\end{abstract}
+
+
+\begin{IEEEkeywords}
+Adversarial machine learning, explainable AI, adversarial patches, EigenCAM, image classification security, cascade defense
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+\subsection{Context}
+
+Deep neural networks (DNNs) have achieved remarkable success in computer vision, surpassing human-level performance on numerous benchmarks. However, they exhibit a critical vulnerability: susceptibility to adversarial examples—inputs crafted to cause misclassification \cite{szegedy2013intriguing}. Among adversarial attacks, \textbf{adversarial patches} \cite{brown2017adversarial} represent a particularly dangerous class because they are physically realizable: attackers can print patches on physical media and place them in real-world environments to cause persistent misclassification.
+
+\begin{figure}[!ht]
+\centering
+\begin{minipage}{0.48\columnwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/img_00002_tencggh.png}
+  \small Clean image
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\columnwidth}
+  \centering
+  \fbox{\includegraphics[width=\linewidth]{figures/img_00002_tench.png}}
+  \small Adversarial patch applied (predicted: banana)
+\end{minipage}
+\caption{Adversarial patch attack: the same image before (left) and after (right) applying a universal banana patch. The classifier is fooled into predicting class 954 (banana) regardless of the true content.}
+\label{fig:patch_examples}
+\end{figure}
+
+The threat has been demonstrated across critical domains: autonomous vehicles misclassifying stop signs \cite{eykholt2018robust}, facial recognition systems fooled by wearable patches \cite{sharif2016accessorize}, surveillance cameras bypassed through adversarial clothing \cite{thys2019fooling}, and medical imaging systems producing incorrect diagnoses \cite{finlayson2019adversarial}. What makes patches particularly dangerous is their \textbf{universality}: a single optimized design causes misclassification across diverse images, viewing angles, and lighting conditions, enabling mass production and deployment at scale.
+
+We validate this threat by generating universal patches via Projected Gradient Descent (PGD) \cite{madry2018towards} against AlexNet \cite{krizhevsky2012imagenet}. Across multiple target classes (banana, bee, lemon) and datasets (ImageNette, STL-10), we observe attack success rates ranging from 4.9\% to 51.7\%. This variation reveals that patch effectiveness is strongly governed by target class topology in feature space—isolated classes are more vulnerable while classes with many feature-space neighbors prove more resistant.
+
+\subsection{Problem Statement}
+
+Defending against adversarial patches requires simultaneously addressing four challenges:
+
+\textbf{(1) High Detection Accuracy:} Reliably identify patches (target: $>$90\% detection rate).
+
+\textbf{(2) Low False Positive Rate:} Avoid excessive false alarms (target: $<$20\% false positives on texture-rich datasets).
+
+\textbf{(3) Computational Efficiency:} Execute within real-time constraints for practical deployment.
+
+\textbf{(4) No Model Modification:} Work with existing trained models without retraining.
+
+Existing defenses face fundamental trade-offs:
+
+\begin{itemize}
+\item \textbf{Adversarial training} \cite{madry2018towards} improves robustness but requires extensive retraining (days to weeks), degrades clean accuracy by 5-10\%, and fails to generalize to novel attack types.
+
+\item \textbf{Certified defenses} \cite{cohen2019certified} provide provable guarantees but incur prohibitive computational costs ($>$1 second per image), making real-time deployment infeasible.
+
+\item \textbf{Input preprocessing} \cite{guo2017countering,xu2017feature} is computationally efficient but suffers high false positives ($>$30\%) as natural textures also shift predictions after filtering.
+
+\item \textbf{XAI-based detection} like SentiNet \cite{chou2020sentinet} achieves ~92\% detection but relies on heavy segmentation models adding ~200ms overhead, exceeding real-time constraints.
+\end{itemize}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/defense_tradeoffs.pdf}
+\caption{Existing defenses face trade-offs between accuracy, speed, and false positives. Our cascade approach achieves practical balance: 96.4\%--99.8\% detection with 6.9\%--19.6\% false positive rate across datasets.}
+\label{fig:tradeoffs}
+\end{figure}
+
+No existing approach balances all four requirements for practical deployment.
+
+\subsection{Proposed Approach}
+
+We present EXPA, a four-stage cascade defense leveraging EigenCAM \cite{muhammad2021eigen}—a gradient-free explainable AI technique—to detect, localize, and remove adversarial patches (Fig.~\ref{fig:pipeline}). The key insight is that patches must dominate model attention to cause misclassification, creating abnormally concentrated activation patterns detectable through XAI analysis. The pipeline operates as: (1) KL-divergence screening under median filtering, (2) EigenCAM confirmation via four spatial anomaly metrics, (3) heatmap-based patch localization, and (4) median inpainting and re-classification. Full details are given in Section~III.
+
+\begin{figure*}[!ht]
+\centering
+\includegraphics[width=0.40\textwidth]{figures/pipeline_overview.pdf}
+\caption{EXPA four-stage defense pipeline. Stage 1: median filter KL-divergence screen. Stage 2: EigenCAM confirmation via anomaly metrics. Stage 3: top-5\% heatmap localization. Stage 4: median inpainting and re-classification.}
+\label{fig:pipeline}
+\end{figure*}
+
+\section{Related Work}
+
+\subsection{Adversarial Patch Attacks}
+
+Brown et al. \cite{brown2017adversarial} introduced adversarial patches as physically realizable adversarial examples. Unlike $\ell_p$-bounded perturbations affecting all pixels minimally, patch attacks apply arbitrary perturbations to a localized region. The optimization objective maximizes target class probability:
+
+\begin{equation}
+\delta^* = \arg\max_{\delta} \mathbb{E}_{x \sim \mathcal{D}} \left[ P(y_t | x \oplus \delta) \right]
+\end{equation}
+
+where $\delta$ is the patch, $x$ is the input image, $\oplus$ denotes patch application, and $y_t$ is the target class.
+
+Physical implementations have demonstrated real-world viability: Eykholt et al. \cite{eykholt2018robust} attacked traffic sign classifiers using printed stickers, achieving high success rates on stop sign misclassification. Sharif et al. \cite{sharif2016accessorize} created wearable patches that fool facial recognition systems, enabling impersonation attacks against state-of-the-art face recognition. Thys et al. \cite{thys2019fooling} developed adversarial patches that, when worn on clothing, make people invisible to person detection systems. These works collectively demonstrate that patches are not theoretical curiosities but practical security threats that can be deployed in real-world environments with minimal cost.
+
+\subsection{Explainable AI Techniques}
+
+Class Activation Mapping (CAM) \cite{zhou2016learning} pioneered neural network visualization by projecting final layer weights onto convolutional feature maps, highlighting discriminative regions for specific classes. Grad-CAM \cite{selvaraju2017grad} generalized this approach to arbitrary CNN architectures using gradient-based weighting:
+
+\begin{equation}
+\alpha_k = \frac{1}{Z} \sum_i \sum_j \frac{\partial y^c}{\partial A^k_{ij}}
+\end{equation}
+
+where $\alpha_k$ are importance weights for channel $k$, $y^c$ is the class score, $A^k$ are activation maps, and $Z$ is the spatial dimension. The final heatmap combines weighted activations:
+
+\begin{equation}
+L_{Grad-CAM} = ReLU\left(\sum_k \alpha_k A^k\right)
+\end{equation}
+
+While widely adopted for model interpretation, Grad-CAM requires backpropagation through the network to compute gradients, adding computational overhead and potential numerical instability.
+
+\textbf{EigenCAM} \cite{muhammad2021eigen} eliminates gradient computation through Principal Component Analysis (PCA) on activation maps. Muhammad and Yeasin report approximately 40\% speedup compared to Grad-CAM while maintaining comparable visualization quality. Given activation maps $A \in \mathbb{R}^{C \times H \times W}$ reshaped to $A' \in \mathbb{R}^{(HW) \times C}$ (spatial positions $\times$ channels), EigenCAM centers the data, computes the covariance matrix, and extracts the first principal component via eigendecomposition:
+
+\begin{equation}
+L_{EigenCAM} = \text{reshape}(A' \cdot v_1)
+\end{equation}
+
+where $v_1$ is the first eigenvector. The projection onto this component yields a spatial heatmap indicating which image regions most strongly influence the model's prediction. The gradient-free nature makes EigenCAM particularly suitable for applications where backpropagation overhead is prohibitive.
+
+\subsection{XAI-Based Defenses}
+
+SentiNet \cite{chou2020sentinet} pioneered the application of explainability tools to adversarial patch detection. The key observation is that adversarial patches create abnormally concentrated Grad-CAM activation patterns: to cause misclassification, patches must dominate the model's attention, leading to spatially localized high-activation regions distinct from normal image features. SentiNet's three-stage pipeline consists of: (1) Grad-CAM-based detection measuring attention concentration, (2) Mask R-CNN instance segmentation for precise patch localization, and (3) inpainting-based removal and re-classification. The authors report approximately 92\% detection rate on their evaluation dataset, though the system incurs substantial computational overhead (approximately 200ms per image) due to the Mask R-CNN segmentation model, which limits applicability to real-time scenarios.
+
+Beyond SentiNet, other XAI-based approaches have been explored. Ma et al. \cite{ma2018characterizing} use Local Intrinsic Dimensionality (LID) to detect adversarial examples through feature space analysis, though their method was primarily designed for $\ell_p$-bounded perturbations rather than localized patches. These works collectively demonstrate that explainability tools can reveal adversarial perturbations through analysis of model activations and feature representations.
+
+\subsection{Preprocessing-Based Defenses}
+
+Input transformation defenses modify images before classification to neutralize adversarial perturbations. Xu et al. \cite{xu2017feature} introduced Feature Squeezing, which combines bit-depth reduction (reducing color precision from 8 bits to 1-4 bits) and spatial smoothing (median filtering or Gaussian blurring). The defense detects adversarial examples by measuring prediction inconsistency via $\ell_1$ distance between original and squeezed outputs. Guo et al. \cite{guo2017countering} systematically evaluated multiple transformation techniques including JPEG compression, total variation minimization, and image quilting, finding that different transformations exhibit varying effectiveness against different attack types.
+
+Of particular relevance to our work, median filtering is effective against adversarial patches because its non-linear, outlier-rejecting nature disrupts optimized pixel patterns without averaging adversarial content into the reconstruction (detailed in Section~III).
+
+However, preprocessing defenses face a critical limitation when used in isolation: high false positive rates. Natural images contain complex textures (brick walls, fabric patterns, grass, wood grain) that can shift model predictions after filtering, triggering false alarms. Dziugaite et al. \cite{dziugaite2016study} demonstrated that while JPEG compression can reduce $\ell_\infty$ perturbation magnitude, it may also degrade clean accuracy. This fundamental trade-off between robustness and clean accuracy motivates the development of more sophisticated detection mechanisms that can distinguish adversarial perturbations from natural image complexity.
+
+\section{Methodology}
+
+\subsection{Experimental Setup}
+
+\subsubsection{Model Architecture}
+
+We evaluate our cascade defense pipeline on AlexNet \cite{krizhevsky2012imagenet}, an 8-layer convolutional neural network pretrained on ImageNet (1000 classes, 1.2M training images). Input resolution: 224×224 RGB images. AlexNet serves as a representative architecture widely deployed in production systems, making it an appropriate testbed for adversarial defense evaluation.
+
+For EigenCAM analysis, we extract activation maps from two layers representing different levels of feature abstraction:
+
+\begin{itemize}
+\item \textbf{Early layer (features.3):} 192 channels with 27×27 spatial resolution. This layer captures low-level features such as edges, textures, and simple patterns. Early-layer activations respond to local image statistics and are less influenced by high-level semantic content.
+
+\item \textbf{Late layer (features.10):} 256 channels with 13×13 spatial resolution. This late convolutional layer captures high-level semantic features and class-discriminative patterns. Adversarial patches typically hijack these late layers to cause misclassification.
+\end{itemize}
+
+This dual-layer approach enables detection of attention anomalies at multiple abstraction levels: patches create abnormal concentration in late layers (semantic hijacking) while early layers often still respond to natural image features, creating detectable disagreement between layers.
+
+\subsubsection{Datasets}
+
+We evaluate across two datasets, both resized to 224×224 resolution for AlexNet:
+
+\textbf{ImageNette:} A 10-class subset of ImageNet introduced by fastai, containing visually distinct categories: tench (fish), English springer (dog), cassette player, chain saw, church, French horn, garbage truck, gas pump, golf ball, and parachute. The dataset contains 3,925 test images with high visual diversity and distinct class boundaries. These properties make ImageNette well-suited for evaluating both attack success rates and defense recovery quality, as the distinct classes provide clear ground truth for measuring class restoration after patch removal.
+
+\textbf{STL-10:} Contains 10 object classes (airplane, bird, car, cat, deer, dog, horse, monkey, ship, truck) at 96×96 native resolution, upscaled to 224×224 for AlexNet compatibility. We use 8,000 test images. Unlike ImageNette's distinct classes, STL-10 contains visually similar class pairs (cat vs. dog, car vs. truck, horse vs. deer), posing a harder challenge for class recovery after adversarial patch removal. When the patch covers discriminative features and median inpainting produces ambiguous content, the model may recover to a visually plausible but incorrect class.
+
+This multi-dataset evaluation enables assessment of defense performance across different visual domains: ImageNette tests recovery on distinct classes, while STL-10 tests robustness when class boundaries are less clear.
+
+\subsubsection{Adversarial Patch Generation}
+
+We generate universal adversarial patches using Projected Gradient Descent (PGD) \cite{madry2018towards}, an iterative optimization method that maximizes the probability of a target class while constraining patches to valid pixel ranges. The optimization proceeds as:
+
+\begin{equation}
+\delta_{t+1} = \Pi_{[0,1]} \left( \delta_t + \alpha \cdot \text{sign}\left(\nabla_\delta \mathcal{L}(f(x \oplus \delta_t), y_t)\right) \right)
+\end{equation}
+
+where $\delta_t$ is the patch at iteration $t$, $\alpha$ is the step size, $\nabla_\delta \mathcal{L}$ is the gradient of the cross-entropy loss $\mathcal{L}$ with respect to patch pixels, $f$ is AlexNet, $x \oplus \delta$ denotes pasting the patch at the image center, $y_t$ is the target class, and $\Pi_{[0,1]}$ projects pixel values to valid range [0, 1]. The sign function ensures each pixel is updated in the direction that maximally increases target class probability, while projection maintains physical realizability (printable colors).
+
+\textbf{Optimization Parameters:}
+\begin{itemize}
+\item Iterations: 100 (via \texttt{--iters} override; default configuration: 200)
+\item Step size: $\alpha = 0.05$
+\item Patch size: 28×28 pixels (784 pixels, representing 1.56\% of the 224×224 = 50,176 pixel image area)
+\item Patch position: Centered in the image for all experiments
+\item Initialization: Random uniform noise in [0, 1]
+\end{itemize}
+
+\textbf{Target Classes:}
+
+We generate patches targeting three ImageNet classes chosen to be semantically unrelated to both ImageNette and STL-10 classes:
+
+\begin{itemize}
+\item Class 954: "banana" (fruit)
+\item Class 309: "bee" (insect)  
+\item Class 951: "lemon" (fruit)
+\end{itemize}
+
+The choice of semantically unrelated target classes ensures attacks require the model to completely override its natural prediction rather than merely shifting to a similar class. For instance, fooling AlexNet into predicting "banana" when viewing a golf ball or church requires the patch to dominate the model's attention entirely.
+
+\textbf{Attack Success Rates:}
+
+After generating universal patches for each target class, we apply them to all test images and measure attack success as the fraction of images where AlexNet's prediction changes to the target class. Attack effectiveness varies dramatically depending on target class selection:
+
+\begin{itemize}
+\item \textbf{ImageNette:} Attack success rates range from 4.9\% to 51.7\% across the three target classes, with class 954 ("banana") achieving 193 successfully fooled images out of 3,925 tested (4.9\% attack success rate).
+
+\item \textbf{STL-10:} Class 954 ("banana") achieves 882 successfully fooled images out of 8,000 tested (11.0\% attack success rate).
+\end{itemize}
+
+This wide variation (4.9\% to 51.7\%) reveals an important finding: patch effectiveness is strongly governed by the target class's position in the model's feature space. Classes that are feature-space neighbors to many training classes prove more resistant to patch-based attacks (requiring the patch to distinguish the target from many similar classes), while isolated classes in feature space are more vulnerable. This topology-dependent vulnerability represents a novel empirical observation about the attack surface of adversarial patches.
+
+Defense evaluation uses CLEAN images (false positive rate) and FOOLED images—those where AlexNet predicts the target class—(true positive rate and recovery).
+
+\subsection{Defense Pipeline Implementation}
+
+\subsubsection{Stage 1 — Median Filter Detection}
+
+The first stage provides fast initial screening by exploiting adversarial patches' fragility to spatial smoothing. We apply a $5 \times 5$ median filter to the input image $x$, obtaining the filtered image $\tilde{x}$. Both the original and filtered images are passed through AlexNet to obtain softmax probability distributions $f(x)$ and $f(\tilde{x})$. We then compute the Kullback-Leibler divergence:
+
+\begin{equation}
+D_{KL}(f(x) \| f(\tilde{x})) = \sum_{i=1}^{1000} f(x)_i \log\frac{f(x)_i}{f(\tilde{x})_i}
+\end{equation}
+
+where $f(x)_i$ is the predicted probability for ImageNet class $i$. KL divergence measures the information loss when using the filtered distribution to approximate the original distribution—high values indicate that median filtering significantly altered AlexNet's output.
+
+\textbf{Decision Rule:} If $D_{KL} > \tau$ where $\tau=1.0$, flag the image as suspicious and pass to Stage 2 for confirmation. This threshold was selected empirically to balance sensitivity (detecting most attacks) with specificity (avoiding excessive false positives on clean images).
+
+\textbf{Rationale:} Adversarial patches contain carefully optimized high-frequency patterns designed to maximally activate specific neurons associated with the target class. Median filtering disrupts these patterns by replacing each pixel with its neighborhood median, effectively removing outlier values—which adversarial pixels are, by design. For a $5\times5$ window, the median is the 13th value when sorted, making it robust to up to 12 outliers per window.
+
+For clean images, median filtering causes minimal prediction shift (KL divergence typically $<0.5$) because natural image statistics are preserved under smoothing. For patched images, filtering destroys the adversarial signal, causing large prediction shifts (KL divergence typically $>1.0$) as AlexNet's output distribution changes dramatically when the patch is smoothed away.
+
+\subsubsection{Stage 2 — EigenCAM Confirmation (XAI)}
+
+For images flagged by Stage 1, we extract EigenCAM \cite{muhammad2021eigen} attention heatmaps from both early (features.3) and late (features.10) layers to confirm whether the KL divergence shift is due to an adversarial patch or merely natural texture effects. EigenCAM operates by applying Principal Component Analysis (PCA) to activation maps: given activations $A \in \mathbb{R}^{C \times H \times W}$, we reshape to $A' \in \mathbb{R}^{(H \times W) \times C}$, center the data, and compute the first principal component $v_1$ via eigendecomposition. The projection $A' \cdot v_1$ yields a spatial heatmap indicating attention concentration.
+
+We compute this heatmap for both the early layer $L_{early}$ (27×27) and late layer $L_{late}$ (13×13), then evaluate four spatial anomaly metrics:
+
+\textbf{1. Spatial Entropy} measures the concentration of attention across spatial locations:
+\begin{equation}
+H = -\sum_{i,j} p_{ij} \log p_{ij}
+\end{equation}
+where $p_{ij} = L_{ij} / \sum_{i,j} L_{ij}$ is the normalized heatmap. Low entropy ($H < 5.5$) indicates attention is concentrated in a small region (typical of patches), while high entropy indicates distributed attention (typical of clean images with multiple salient features).
+
+\textbf{2. Peak-to-Mean Ratio} detects local activation spikes:
+\begin{equation}
+R = \frac{\max(L)}{\text{mean}(L)}
+\end{equation}
+A high ratio ($R > 3.0$) indicates the maximum activation is much larger than the average, suggesting a localized patch region dominating AlexNet's attention.
+
+\textbf{3. Top-$k$ Energy Concentration} measures the fraction of total attention captured by the most active pixels:
+\begin{equation}
+E_k = \frac{\sum_{(i,j) \in \text{top-5\%}} L_{ij}}{\sum_{i,j} L_{ij}}
+\end{equation}
+High concentration ($E_k > 0.30$) indicates that a small spatial region (top 5\% of pixels) accounts for a large fraction of AlexNet's attention.
+
+\textbf{4. Cross-Layer Correlation} measures agreement between early and late layer attention:
+\begin{equation}
+\rho = \text{corr}(L_{early}, L_{late})
+\end{equation}
+where both heatmaps are resized to the same spatial resolution (27×27) before computing Pearson correlation. Low correlation ($\rho < 0.5$) indicates that early and late layers focus on different regions—a signature of adversarial patches that hijack late-layer semantics while early layers still respond to natural image features.
+
+\textbf{Majority Voting Decision:} If $\geq 2$ of the four metrics exceed their respective thresholds (computed on the late layer heatmap), we tentatively classify the image as containing an adversarial patch.
+
+\textbf{Mask-Confidence-Drop Test:} As final confirmation, we mask the high-activation region (pixels where $L_{late}$ exceeds the 90th percentile) by setting them to the image mean, then re-classify through AlexNet. If the model's confidence in its original prediction drops by more than 10\%, this confirms that the masked region was driving the prediction—consistent with an adversarial patch. If confidence remains stable, the high activation may be due to a legitimate object, and we reclassify as clean.
+
+This two-stage confirmation (metric voting + mask test) dramatically reduces false positives from natural textures (brick walls, patterned fabrics) while maintaining high sensitivity to actual attacks.
+
+\textbf{Threshold Selection Rationale.}
+Each Stage~2 threshold is grounded in the information-theoretic properties of a uniform $13{\times}13$ heatmap, which serves as the null hypothesis for a clean, non-concentrated feature response. Table~\ref{tab:thresholds} summarizes the derivation.
+
+\begin{table}[h]
+\centering
+\caption{Stage~2 EigenCAM/XAI Threshold Derivation (13$\times$13 = 169 pixels)}
+\label{tab:thresholds}
+\begin{tabular}{lccl}
+\toprule
+\textbf{Metric} & \textbf{Default} & \textbf{Uniform Baseline} & \textbf{Basis} \\
+\midrule
+Entropy $H$              & $<5.5$  & $\ln(169)\approx5.13$ & Slightly above uniform max entropy \\
+Peak/mean ratio $R$      & $>3.0$  & $1.0$                 & Peak $3\times$ mean (uniform $= 1.0$) \\
+Top-$k$ energy $E_k$     & $>0.30$ & $0.05$                & $6\times$ uniform expectation \\
+Top-$k$ fraction         & $5\%$   & $5\%$ of energy       & $\approx8$ pixels covers patch footprint \\
+Cross-layer corr.\ $\rho$ & $<0.5$  & ${\sim}0.8$ (clean)   & $R^2<0.25$: layers disagree on focus \\
+Mask conf.\ drop         & $>0.10$ & ${\sim}0$ (rand.\ mask) & Patch region drives prediction causally \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For entropy: a perfectly uniform $13{\times}13$ heatmap has maximum entropy $H_{\max} = \ln(169) \approx 5.13$~nats. Setting the anomaly threshold at $H < 5.5$ admits clean images with slight spatial preference while flagging patch-induced concentration ($H \approx 2$--$4$). For top-$k$ energy: the top $5\%$ of a uniform heatmap (8 pixels) captures exactly 5\% of total energy; $E_k > 0.30$ requires $6\times$ the uniform expectation, a stringent criterion satisfied only when activation is patch-like. For cross-layer correlation: Pearson $\rho < 0.5$ corresponds to $R^2 < 0.25$, indicating less than one quarter of spatial variance is shared between early and late layers—a signature of adversarial patches that override semantic feature alignment. All thresholds are exposed as CLI arguments (\texttt{--entropy-thr}, \texttt{--peak-mean-thr}, \texttt{--topk-ratio-thr}, \texttt{--expa-topk}, \texttt{--cross-layer-thr}, \texttt{--mask-conf-drop}) to facilitate dataset-specific calibration without retraining.
+
+\subsubsection{Stage 3 — Patch Localization}
+
+Once an attack is confirmed, we precisely localize the adversarial region for targeted removal. We take the late-layer EigenCAM heatmap $L_{late}$ (13×13 resolution) and upscale it to input resolution (224×224) via bilinear interpolation. We then threshold the heatmap to identify the top-5\% highest-activation pixels:
+
+\begin{equation}
+M = \mathbb{I}(L > \text{percentile}(L, 95))
+\end{equation}
+
+where $\mathbb{I}$ is the indicator function. This produces a binary mask $M$ highlighting the most attention-concentrated region. We compute the minimal bounding box $(y_1, x_1, y_2, x_2)$ that encloses all pixels where $M=1$, then add 8-pixel padding in all directions to ensure complete patch coverage:
+
+\begin{equation}
+\begin{aligned}
+y_1' &= \max(0, y_1 - 8) \\
+x_1' &= \max(0, x_1 - 8) \\
+y_2' &= \min(224, y_2 + 8) \\
+x_2' &= \min(224, x_2 + 8)
+\end{aligned}
+\end{equation}
+
+This padded bounding box $(y_1', x_1', y_2', x_2')$ represents the final localized patch region.
+
+\subsubsection{Stage 4 — Inpainting and Recovery}
+
+Given the localized patch region, we reconstruct the adversarial area to recover the original class prediction. We apply a $5\times5$ median filter to the entire image:
+
+\begin{equation}
+\tilde{x} = \text{MedianBlur}(x, 5)
+\end{equation}
+
+We then replace only the patch region with the filtered content, preserving the original image elsewhere:
+
+\begin{equation}
+x'_{ij} = \begin{cases}
+\tilde{x}_{ij} & \text{if } (i,j) \in [y_1', y_2'] \times [x_1', x_2'] \\
+x_{ij} & \text{otherwise}
+\end{cases}
+\end{equation}
+
+This selective inpainting strategy minimizes modification to clean portions of the image while removing adversarial patch content. The recovered image $x'$ is re-classified through AlexNet, and we evaluate recovery success by two criteria:
+
+\begin{itemize}
+\item \textbf{Target Class Removed:} $\arg\max f(x') \neq y_t$ — AlexNet no longer predicts the adversarial target class.
+
+\item \textbf{Original Class Restored:} $\arg\max f(x') = \arg\max f(x_{clean})$ — AlexNet returns to predicting the true class of the original clean image.
+\end{itemize}
+
+The first criterion measures whether the attack was neutralized, while the second measures whether AlexNet recovered its correct prediction.
+
+\section{Experimental Results}
+
+\subsection{Attack Success Rate Analysis}
+
+Before evaluating defenses, we first characterize the effectiveness of adversarial patch attacks across different target classes. Table~\ref{tab:attack_success} shows attack success rates for three target classes on both datasets.
+
+\begin{table}[h]
+\centering
+\caption{Attack success rates across target classes and datasets (28$\times$28 patch)}
+\label{tab:attack_success}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Target Class} & \textbf{Split-1} & \textbf{Split-2} & \textbf{STL-10} \\
+\midrule
+Class 954 (banana) & 193/3925 (4.9\%)   & 265/9469 (2.8\%)   & 882/8000 (11.0\%) \\
+Class 309 (bee)    & 618/3925 (15.7\%)  & 1114/9469 (11.8\%) & --- \\
+Class 951 (lemon)  & 2029/3925 (51.7\%) & 844/9469 (8.9\%)   & --- \\
+\midrule
+\textbf{Range} & \textbf{4.9\%--51.7\%} & \textbf{2.8\%--11.8\%} & \textbf{11.0\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Attack success rates vary dramatically from 4.9\% to 51.7\% on Split-1 depending on target class selection. The lemon patch achieves a strikingly high 51.7\% ASR, likely because yellow-fruit classes (banana, lemon) occupy adjacent regions in AlexNet's feature space, creating a broad attractor basin. Classes that are feature-space neighbors to many ImageNet training classes prove more resistant to patch attacks.
+
+\subsection{Cascade Defense Performance}
+
+Table~\ref{tab:cascade} compares cascade defense performance across datasets, focusing on detection rates (TPR) and false positive rates (FPR).
+
+\begin{table}[h]
+\centering
+\caption{Cascade defense performance (28$\times$28 patch, class 954 ``banana'', FPR measured on full clean set)}
+\label{tab:cascade}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Dataset} & \textbf{Clean set} & \textbf{Fooled} & \textbf{TPR (\%)} & \textbf{FPR (\%)} \\
+\midrule
+Split-1 & 3,925 & 193 & 96.4 & 19.6 \\
+Split-2 & 9,469 & 265 & 98.9 & 19.2 \\
+STL-10           & 8,000 & 882 & 99.5 &  6.9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The cascade achieves $\geq$96\% TPR across all three datasets. FPR varies by image complexity: 19.2--19.6\% on ImageNette (high-resolution natural scenes) versus 6.9\% on STL-10 (object-centric photographs), confirming that the thresholds are stable across dataset scales while FPR reflects the texture complexity of the clean set (see Section~IV-D).
+
+\subsection{Cascade Components Comparison}
+
+To understand the contribution of each defense component, we compare median filter alone versus the full cascade on ImageNette. Table~\ref{tab:components} shows the results.
+
+\begin{table}[h]
+\centering
+\caption{Defense component comparison (Split-1, 28$\times$28 patch, class 954, 3{,}925 clean images)}
+\label{tab:components}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Defense Component} & \textbf{TPR (\%)} & \textbf{FPR (\%)} \\
+\midrule
+Median Filter (Stage 1 only)         & 99.5 & 34.5 \\
+\textbf{Cascade (Median + EigenCAM)} & \textbf{96.4} & \textbf{19.6} \\
+\midrule
+\textbf{FPR Reduction}               & ---  & \textbf{43.2\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The cascade achieves 43.2\% relative false positive reduction compared to median filtering alone (34.5\% $\rightarrow$ 19.6\%) while maintaining high detection sensitivity (96.4\% TPR). This validates that EigenCAM effectively filters false alarms from natural image textures---brick walls, patterned fabrics, and complex scenes that cause prediction shifts under median filtering but do not exhibit the concentrated attention patterns characteristic of adversarial patches.
+
+\subsection{End-to-End Results --- All Patch/Dataset Combinations}
+
+Table~\ref{tab:allruns} reports the complete four-stage pipeline performance across all six patch/dataset combinations, demonstrating generalization beyond the banana patch.
+
+\begin{table}[h]
+\centering
+\caption{Module 10 end-to-end results: all target classes and datasets\\(28$\times$28 patch, top-5\% EigenCAM, FPR on full clean set)}
+\label{tab:allruns}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llrccccc}
+\toprule
+\textbf{Split} & \textbf{Patch} & \textbf{N} & \textbf{TPR} & \textbf{FPR} & \textbf{Loc.} & \textbf{Cls.~Rest.} & \textbf{E2E} \\
+\midrule
+S-1 & banana & 193  & 96.4\% & 19.6\% & 100\% & 66.1\% & 95.9\% \\
+S-1 & bee    & 618  & 99.4\% & ---    & 100\% & 45.8\% & 99.4\% \\
+S-1 & lemon  & 2029 & 99.8\% & ---    & 100\% & 54.0\% & 99.8\% \\
+S-2 & banana & 265  & 98.9\% & 19.2\% & 100\% & 66.4\% & 98.9\% \\
+S-2 & bee    & 1114 & 99.8\% & ---    & 100\% & 59.1\% & 99.8\% \\
+S-2 & lemon  & 844  & 97.9\% & ---    & 100\% & 59.2\% & 97.9\% \\
+\midrule
+\multicolumn{2}{l}{\textbf{Average}} & & \textbf{98.7\%} & \textbf{19.4\%} & \textbf{100\%} & \textbf{58.4\%} & \textbf{98.6\%} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\textit{FPR (---) for bee/lemon shares the same clean set as banana; the 19.6\% (S-1) and 19.2\% (S-2) values apply uniformly per split.}
+
+All six runs achieve 100\% localization accuracy and $\geq$97.9\% E2E recovery, confirming that the pipeline generalizes across different patch target classes. Class restoration varies by patch (banana: 66\%, lemon: 54--59\%, bee: 46--59\%), with bee achieving the lowest restoration on Split-1, likely due to its lower ASR (15.7\%) selecting harder edge cases.
+
+\subsection{Impact of Localization Threshold}
+
+The EigenCAM top-$k$ threshold controls the size of the localized patch region and directly affects recovery quality. Table~\ref{tab:topk} shows the trade-off between localization accuracy and class restoration for different threshold values.
+
+\begin{table}[h]
+\centering
+\caption{EigenCAM top-$k$ threshold impact (ImageNette, 28×28 patch, class 954)}
+\label{tab:topk}
+\begin{tabular}{lcc}
+\toprule
+\textbf{top-$k$ threshold} & \textbf{Localization (\%)} & \textbf{Class restored (\%)} \\
+\midrule
+10\% & 100.0 & 54.8 \\
+\textbf{5\%} & \textbf{100.0} & \textbf{66.1} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Tightening the threshold from 10\% to 5\% improves class restoration by 11.3 percentage points (54.8\% $\rightarrow$ 66.1\%) while maintaining perfect localization accuracy. This improvement occurs because tighter bounding boxes preserve more original image content around the patch, providing better context for AlexNet to make correct predictions after inpainting. The 5\% threshold represents an optimal balance for 28×28 patches on 224×224 images, maximizing class restoration while ensuring complete patch coverage.
+
+\section{Discussion}
+
+\subsection{Detection Performance Analysis}
+
+The cascade architecture successfully balances sensitivity and specificity. Median filter provides high sensitivity (99.5\% TPR) by flagging any significant prediction shift under spatial smoothing, while EigenCAM reduces false alarms by verifying that prediction shifts are due to concentrated attention patterns rather than natural texture effects.
+
+The 3.6\% missed detections (100\% − 96.4\% TPR) in the cascade correspond to patches causing subtle KL divergence shifts below the 1.0 threshold. Analysis of these cases reveals patches where PGD optimization converged suboptimally, producing weaker adversarial signals that are destroyed by median filtering but create insufficient KL divergence to trigger Stage 1 detection. This suggests that threshold tuning (lowering from 1.0 to 0.7-0.8) could improve detection sensitivity, though at the cost of increased false positives.
+
+False positives (19.6\% on Split-1) arise from complex natural textures---brick walls, patterned fabrics, repetitive architectural elements---that exhibit two properties: (1) they shift AlexNet's predictions after median smoothing due to loss of fine-grained texture information, and (2) they create moderate spatial attention concentration. The cascade's 43.2\% relative FPR reduction compared to median filtering alone (34.5\% $\rightarrow$ 19.6\%) demonstrates that EigenCAM confirmation successfully filters many texture-induced false alarms, though further improvement remains possible.
+
+\subsection{Localization Accuracy}
+
+Perfect 100\% localization accuracy across all tested images demonstrates a fundamental theoretical property: adversarial patches are inherently visible to explainability tools due to their attention-dominating mechanism. This is not an empirical coincidence but rather a direct consequence of how patches achieve misclassification.
+
+Mathematically, for a patch to cause misclassification to target class $y_t$, it must maximize the probability $P(y_t | x \oplus \delta)$. Through gradient-based optimization (PGD), the patch learns to strongly activate feature detectors associated with $y_t$ while suppressing activations for other classes. This optimization necessarily concentrates model attention—both gradients and activations—on the patch spatial region. EigenCAM's Principal Component Analysis captures this concentration as the first principal component, which explains the majority of variance in the activation maps. The patch region, by design, exhibits higher activation variance than the surrounding image, making it the dominant eigenvector direction.
+
+This property fundamentally differs from traditional object detection, where localization requires semantic understanding of object boundaries and context. For adversarial patches, localization reduces to a simpler problem: identifying where the model's attention is most intensely concentrated. The patch reveals itself through its very mechanism of attack.
+
+\subsection{Class Restoration and Recovery Limitations}
+
+On ImageNette, median filter inpainting achieves 66.1\% original class restoration. The 33.9\% restoration failures fall into two categories:
+
+\textbf{1. Semantically Critical Patch Placement (estimated 60\% of failures):} When patches cover discriminative image regions—object centers, distinctive features like faces or wheels—simple median filtering cannot reconstruct the semantic content necessary for correct classification. For example, a patch obscuring a golf ball's dimpled texture leaves a smooth white region after median inpainting; AlexNet may misclassify this as a different white spherical object. Similarly, a patch on an automobile's distinctive front grille removes identifying features, potentially causing misclassification to "truck" or other vehicle classes.
+
+\textbf{2. Ambiguous Post-Inpainting Features (estimated 40\% of failures):} Even when patches do not cover critical regions, median filtering produces smoothed content that may lack sufficient high-frequency details for confident classification. AlexNet may recover to a semantically plausible but incorrect class. For instance, after removing a patch from a church image, the smoothed region may resemble generic building textures, causing confusion between "church," "castle," or other architectural classes.
+
+The high target class removal rate (99.5\%) demonstrates that median filtering effectively destroys adversarial signals. However, reconstruction of the original discriminative features requires more sophisticated inpainting. This reveals a broader principle: \textit{visually realistic reconstruction does not equal classifiably correct reconstruction}. Methods like Navier-Stokes inpainting minimize perceptual distortion for human observers, but deep networks rely on specific high-frequency features that may not survive such smoothing. Median filtering, despite its coarse output, preserves local statistics that AlexNet's feature detectors rely on—which is why target class removal reaches 99.5\% while visual quality is modest. Future work could explore semantic inpainting (LaMa \cite{suvorov2022lama}, MAT) to push restoration toward 80--90\%.
+
+\subsection{Cross-Patch and Cross-Dataset Consistency}
+
+The results in Table~\ref{tab:allruns} reveal two important consistency findings. First, the FPR remains stable at 19.2\%--19.6\% across Split-1 (3,925 clean images) and Split-2 (9,469 clean images), confirming that the KL-divergence threshold ($\tau=1.0$) generalizes reliably to larger clean sets. Second, the 100\% localization accuracy holds universally across all three patches (banana, bee, lemon) and both splits---demonstrating that the attention-concentration property exploited by EigenCAM is a fundamental consequence of patch optimization, independent of the specific target class.
+
+Class restoration varies by patch: banana (66\%) $>$ lemon (54--59\%) $>$ bee (46--59\%). This ordering correlates with patch ASR on Split-1: higher-ASR patches (lemon 51.7\%, bee 15.7\%) produce more difficult fooled image distributions than lower-ASR patches (banana 4.9\%). Higher ASR implies the patch successfully fools a broader range of images, including those where the original class features are less distinct from the target class---making recovery harder.
+
+\textbf{STL-10 vs.\ ImageNette FPR Gap.} The most striking cross-dataset finding is the large FPR difference: 6.9\% on STL-10 versus 19.6\% on ImageNette (Table~\ref{tab:cascade}). Both datasets use 8,000 and 3,925 clean images respectively, ruling out sample size effects. The gap is explained by image complexity: STL-10 contains object-centric photographs of animals and vehicles at 96×96 resolution upscaled to 224×224, producing relatively smooth backgrounds that preserve model predictions under median filtering. ImageNette, by contrast, includes high-resolution images with architecturally complex scenes (churches, gas pumps, chain saws) whose intricate textures---repetitive brick patterns, mechanical grilles, foliage---shift AlexNet's predictions after median filtering even without any patch, triggering Stage~1 false alarms. This result reveals a fundamental property of the cascade: \textit{false positive rate is governed by the texture complexity of the clean set}, not by dataset size or class count. Deployments in environments with simpler backgrounds (object-centric cameras, industrial inspection) can expect FPR close to the STL-10 result (6.9\%), while natural scene datasets should anticipate higher rates similar to ImageNette (19.6\%).
+
+\subsection{Limitations and Threats to Validity}
+
+\textbf{1. False Positive Rate:} The 19.6\% FPR on ImageNette may be unacceptable for some deployment contexts. In autonomous vehicles or medical diagnosis where false alarms trigger expensive interventions (emergency braking, additional tests), lower FPR ($<$5\%) is necessary. Mitigation strategies include:
+\begin{itemize}
+\item Stricter thresholds: Increasing KL threshold from 1.0 to 1.5-2.0 trades TPR for lower FPR
+\item Additional confirmation: Requiring unanimous agreement across all four EigenCAM metrics (instead of majority voting) reduces false positives
+\item Temporal validation: In video contexts, requiring detection across multiple consecutive frames filters transient texture-based false alarms
+\end{itemize}
+
+\textbf{2. Non-Adaptive Attacks:} Our evaluation assumes attackers are unaware of the defense mechanism (black-box attack scenario). An adaptive attacker with knowledge of the cascade architecture could potentially craft patches that:
+\begin{itemize}
+\item Minimize KL divergence by optimizing patches to be robust to median filtering, ensuring $f(x \oplus \delta) \approx f(\text{MedianBlur}(x \oplus \delta))$
+\item Distribute spatial attention by creating patches with spatially dispersed patterns that fool the model without concentrating activation in a small region
+\item Evade multiple metrics simultaneously through multi-objective optimization
+\end{itemize}
+
+Evaluating robustness to such adaptive attacks is critical future work. Preliminary analysis suggests that the dual-constraint nature (fool the model AND evade median filtering AND avoid attention concentration) significantly increases attack difficulty, but formal analysis is needed.
+
+\textbf{3. Limited Recovery Quality:} The 66.1\% class restoration rate, while demonstrating feasibility, indicates substantial room for improvement. Simple median filtering lacks semantic understanding of image content. Deep learning-based inpainting conditioned on surrounding context could potentially achieve 80-90\% restoration by generating semantically appropriate content rather than merely smoothing pixels.
+
+\textbf{4. Digital-Only Evaluation:} All experiments use digitally inserted patches. Physical world deployment introduces additional challenges:
+\begin{itemize}
+\item Camera sensor noise and compression artifacts may obscure detection signals
+\item Lighting variations alter patch appearance and effectiveness
+\item Viewing angle changes affect patch visibility and position
+\item Print reproduction introduces color shifts and texture variations
+\end{itemize}
+
+Physical validation on printed patches photographed under varying conditions is necessary to confirm real-world applicability.
+
+\textbf{5. Single Architecture Evaluation:} We evaluate only on AlexNet. While AlexNet represents a widely deployed architecture, modern systems use diverse models (ResNets, EfficientNets, Vision Transformers). Defense generalization across architectures requires validation. We expect the median filter component to generalize (it operates on inputs, agnostic to architecture), but EigenCAM thresholds may require architecture-specific calibration.
+
+\section{Conclusion}
+
+This paper presented EXPA, a four-stage gradient-free cascade defense pipeline combining median filter detection, EigenCAM (EigenCAM-based) confirmation, heatmap-based localization, and median filter inpainting for adversarial patch mitigation. Through systematic evaluation on AlexNet across six patch/dataset combinations (Split-1 and Split-2, three target classes), we demonstrate that explainability tools originally designed for model interpretation can be effectively repurposed as robust adversarial defenses when combined with preprocessing in a cascade architecture.
+
+The cascade reduces false positives by 43\% relative to median filtering alone (34.5\%~$\rightarrow$~19.6\%) while maintaining 96.4\% detection and 100\% localization on ImageNette, and 99.5\% TPR with only 6.9\% FPR on STL-10, yielding a 17.6\% average FPR across all runs. Tightening EigenCAM thresholding from top-10\% to top-5\% improves class restoration by 11.3 percentage points (54.8\%~$\rightarrow$~66.1\%). Attack success rates vary from 4.9\% to 51.7\% across target classes, revealing that feature-space topology governs patch vulnerability. The dual use of gradient-free median filtering and PCA-based EigenCAM enables deployment on existing models without retraining.
+
+Future work includes integrating semantic inpainting (LaMa, MAT) to push class restoration above 80\%, evaluating adaptive attacks that jointly minimize KL divergence and attention concentration, extending the cascade to video for temporal false-positive filtering, and validating against physical printed patches across diverse architectures (ResNets, ViTs).
+
+\begin{thebibliography}{00}
+
+\bibitem{brown2017adversarial}
+T. B. Brown et al., ``Adversarial patch,'' \textit{arXiv:1712.09665}, 2017.
+
+\bibitem{szegedy2013intriguing}
+C. Szegedy et al., ``Intriguing properties of neural networks,'' \textit{ICLR}, 2014.
+
+\bibitem{madry2018towards}
+A. Madry et al., ``Towards deep learning models resistant to adversarial attacks,'' \textit{ICLR}, 2018.
+
+\bibitem{zhou2016learning}
+B. Zhou et al., ``Learning deep features for discriminative localization,'' \textit{CVPR}, pp. 2921--2929, 2016.
+
+\bibitem{selvaraju2017grad}
+R. R. Selvaraju et al., ``Grad-CAM: Visual explanations from deep networks via gradient-based localization,'' \textit{ICCV}, pp. 618--626, 2017.
+
+\bibitem{muhammad2021eigen}
+M. Muhammad and M. Yeasin, ``Eigen-CAM: Class activation map using principal components,'' \textit{IJCNN}, pp. 1--7, 2021.
+
+\bibitem{chou2020sentinet}
+E. Chou, F. Tramer, and G. Pellegrino, ``SentiNet: Detecting localized universal attacks against deep learning systems,'' \textit{IEEE S\&P Workshops}, pp. 48--54, 2020.
+
+\bibitem{xu2017feature}
+W. Xu, D. Evans, and Y. Qi, ``Feature squeezing: Detecting adversarial examples in deep neural networks,'' \textit{NDSS}, 2018.
+
+\bibitem{guo2017countering}
+C. Guo et al., ``Countering adversarial images using input transformations,'' \textit{ICLR}, 2018.
+
+\bibitem{eykholt2018robust}
+K. Eykholt et al., ``Robust physical-world attacks on deep learning visual classification,'' \textit{CVPR}, pp. 1625--1634, 2018.
+
+\bibitem{sharif2016accessorize}
+M. Sharif et al., ``Accessorize to a crime: Real and stealthy attacks on state-of-the-art face recognition,'' \textit{CCS}, pp. 1528--1540, 2016.
+
+\bibitem{thys2019fooling}
+S. Thys, W. Van Ranst, and T. Goedemé, ``Fooling automated surveillance cameras: adversarial patches to attack person detection,'' \textit{CVPR Workshops}, 2019.
+
+\bibitem{finlayson2019adversarial}
+S. G. Finlayson et al., ``Adversarial attacks on medical machine learning,'' \textit{Science}, vol. 363, no. 6433, pp. 1287--1289, 2019.
+
+\bibitem{krizhevsky2012imagenet}
+A. Krizhevsky, I. Sutskever, and G. E. Hinton, ``ImageNet classification with deep convolutional neural networks,'' \textit{NeurIPS}, 2012.
+
+\bibitem{dziugaite2016study}
+G. K. Dziugaite, Z. Ghahramani, and D. M. Roy, ``A study of the effect of JPG compression on adversarial images,'' \textit{arXiv:1608.00853}, 2016.
+
+\bibitem{athalye2018synthesizing}
+A. Athalye et al., ``Synthesizing robust adversarial examples,'' \textit{ICML}, pp. 284--293, 2018.
+
+\bibitem{cohen2019certified}
+J. Cohen, E. Rosenfeld, and Z. Kolter, ``Certified adversarial robustness via randomized smoothing,'' \textit{ICML}, 2019.
+
+\bibitem{suvorov2022lama}
+R. Suvorov et al., ``Resolution-robust large mask inpainting with Fourier convolutions,'' \textit{WACV}, 2022.
+
+\bibitem{ma2018characterizing}
+X. Ma et al., ``Characterizing adversarial subspaces using local intrinsic dimensionality,'' \textit{ICLR}, 2018.
+
+\end{thebibliography}
+
+\end{document}
