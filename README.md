@@ -1,4 +1,4 @@
-# EXPA — Explainability-Based Adversarial Patch Defense
+# EXPA — Explainability-Based Defense against Adversarial Patch Attacks
 
 A modular pipeline for generating adversarial patches and evaluating a 4-stage defense system (EXPA) using EigenCAM-based localization and median inpainting.
 
@@ -168,7 +168,7 @@ Datasets are **not included** in this repository (gitignored).
 
 ---
 
-## Paper
+## Report
 
 This code accompanies the report:
 **"EXPA: Explainability-Based Detection and Recovery of Adversarial Patches"**
